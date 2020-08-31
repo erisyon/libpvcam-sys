@@ -1,8 +1,4 @@
 pub mod pvcam {
-    use std::ffi;
-    use std::fmt;
-    use std::os::raw as c_types;
-
     mod internal {
         #![allow(non_upper_case_globals)]
         #![allow(non_camel_case_types)]
@@ -11,6 +7,7 @@ pub mod pvcam {
         include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
         extern "C" {
+            // blacklisted from bindgen because it incorrectly identifies camera_name as *mut std::os::raw::c_char
             pub fn pl_cam_open(
                 camera_name: *const std::os::raw::c_char,
                 hcam: *mut i16,
@@ -18,6 +15,10 @@ pub mod pvcam {
             ) -> rs_bool;
         }
     }
+
+    use std::ffi;
+    use std::fmt;
+    use std::os::raw as c_types;
 
     pub type Result<T> = std::result::Result<T, Error>;
 
@@ -43,6 +44,12 @@ pub mod pvcam {
                 code: -1,
                 message: format!("{:?} caused error", error.into_cstring()),
             }
+        }
+    }
+
+    impl std::convert::From<Error> for std::string::String {
+        fn from(e: Error) -> Self {
+            e.message
         }
     }
 
@@ -128,6 +135,154 @@ pub mod pvcam {
         }) {
             PVResult::Ok => Ok(handle),
             PVResult::Err => Err(pvcam_error()),
+        }
+    }
+
+    #[repr(u32)]
+    #[derive(Debug, Clone)]
+    pub enum Parameter {
+        CameraSerial = self::internal::PARAM_HEAD_SER_NUM_ALPHA,
+        GainIndex = self::internal::PARAM_GAIN_INDEX,
+        ReadoutPort = self::internal::PARAM_READOUT_PORT,
+        SensorParallelSize = self::internal::PARAM_PAR_SIZE,
+        SensorSerialSize = self::internal::PARAM_SER_SIZE,
+        SpeedTableIndex = self::internal::PARAM_SPDTAB_INDEX,
+    }
+
+    #[repr(i16)]
+    pub enum ParamAttrKind {
+        Current = self::internal::PL_PARAM_ATTRIBUTES_ATTR_CURRENT as i16,
+        // Count = self::internal::PL_PARAM_ATTRIBUTES_ATTR_COUNT as i16,
+        AttrType = self::internal::PL_PARAM_ATTRIBUTES_ATTR_TYPE as i16,
+        // Min = self::internal::PL_PARAM_ATTRIBUTES_ATTR_MIN as i16,
+        // Max = self::internal::PL_PARAM_ATTRIBUTES_ATTR_MAX as i16,
+        // Def = self::internal::PL_PARAM_ATTRIBUTES_ATTR_DEFAULT as i16,
+        // Increment = self::internal::PL_PARAM_ATTRIBUTES_ATTR_INCREMENT as i16,
+        // Access = self::internal::PL_PARAM_ATTRIBUTES_ATTR_ACCESS as i16,
+        Available = self::internal::PL_PARAM_ATTRIBUTES_ATTR_AVAIL as i16,
+    }
+
+    fn is_param_avail(cam_handle: i16, param_id: u32) -> Result<bool> {
+        unsafe {
+            // assume false
+            let mut avail: c_types::c_ushort = 0;
+            let mut_ptr = &mut avail as *mut c_types::c_ushort as *mut c_types::c_void;
+
+            match check_call(self::internal::pl_get_param(
+                cam_handle,
+                param_id,
+                ParamAttrKind::Available as i16,
+                mut_ptr,
+            )) {
+                PVResult::Ok => {
+                    Ok(*(mut_ptr as *const c_types::c_ushort) as u32 == self::internal::PV_OK)
+                }
+                PVResult::Err => Err(pvcam_error()),
+            }
+        }
+    }
+
+    enum ParamType {
+        Int32,
+        String,
+    }
+
+    fn get_param_type(cam_handle: i16, param_id: u32) -> Result<ParamType> {
+        let kind: u32 = unsafe {
+            let mut t: c_types::c_ushort = 0;
+            let mut_ptr = &mut t as *mut c_types::c_ushort as *mut c_types::c_void;
+            match check_call(self::internal::pl_get_param(
+                cam_handle,
+                param_id,
+                ParamAttrKind::AttrType as i16,
+                mut_ptr,
+            )) {
+                PVResult::Ok => *(mut_ptr as *const c_types::c_uint),
+                PVResult::Err => {
+                    return Err(pvcam_error());
+                }
+            }
+        };
+
+        match kind {
+            self::internal::TYPE_UNS16 => Ok(ParamType::Int32), // is this a leaky abstraction?
+            self::internal::TYPE_CHAR_PTR => Ok(ParamType::String),
+            _ => Err(Error {
+                code: -1,
+                message: format!("{:#X} unknown parameter type", kind),
+            }),
+        }
+    }
+
+    fn get_param_as_string(
+        cam_handle: i16,
+        param_id: u32,
+        param_attr: ParamAttrKind,
+    ) -> Result<String> {
+        unsafe {
+            let buf =
+                ffi::CString::from_vec_unchecked(vec![0; self::internal::MAX_PP_NAME_LEN as usize])
+                    .into_raw();
+
+            match check_call(self::internal::pl_get_param(
+                cam_handle,
+                param_id,
+                param_attr as i16,
+                buf as *mut c_types::c_void,
+            )) {
+                PVResult::Ok => Ok(ffi::CString::from_raw(buf).into_string()?),
+                PVResult::Err => Err(pvcam_error()),
+            }
+        }
+    }
+
+    fn get_param_as_int32(
+        cam_handle: i16,
+        param_id: u32,
+        param_attr: ParamAttrKind,
+    ) -> Result<i32> {
+        unsafe {
+            let mut value: i32 = 0;
+            let mut_ptr = &mut value as *mut c_types::c_int as *mut c_types::c_void;
+            match check_call(self::internal::pl_get_param(
+                cam_handle,
+                param_id,
+                param_attr as i16,
+                mut_ptr,
+            )) {
+                PVResult::Ok => Ok(value),
+                PVResult::Err => Err(pvcam_error()),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub enum ParameterValue {
+        IntValue(i32),
+        StringValue(String),
+    }
+
+    pub fn get_param(
+        cam_handle: i16,
+        parameter: Parameter,
+        param_attr: ParamAttrKind,
+    ) -> Result<ParameterValue> {
+        let param_id = parameter as u32;
+        // is_param_avail can succeed with a false value
+        if !is_param_avail(cam_handle, param_id)? {
+            return Err(Error {
+                code: -1,
+                message: format!("parameter {} is unknown", param_id),
+            });
+        }
+
+        match get_param_type(cam_handle, param_id)? {
+            ParamType::Int32 => Ok(ParameterValue::IntValue(get_param_as_int32(
+                cam_handle, param_id, param_attr,
+            )?)),
+            ParamType::String => Ok(ParameterValue::StringValue(get_param_as_string(
+                cam_handle, param_id, param_attr,
+            )?)),
         }
     }
 }
