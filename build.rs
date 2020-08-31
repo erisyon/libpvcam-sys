@@ -45,6 +45,22 @@ fn main() {
         .header(format!("{}/pvcam.h", header_include_path()))
         // BLACKLIST: pl_cam_open; REASON: camera_name variable incorrectly marked as mutable
         .blacklist_function("pl_cam_open")
+        // BLACKLIST: pl_dd_*; REASON: deprecated upstream
+        .blacklist_function("pl_dd_.*")
+        // BLACKLIST: pl_ccd_*; REASON: deprecated upstream
+        .blacklist_function("pl_ccd_.*")
+        // BLACKLIST: pl_spdtab_*; REASON: deprecated upstream
+        .blacklist_function("pl_spdtab_.*")
+        // BLACKLIST: pl_shtr_*; REASON: deprecated upstream
+        .blacklist_function("pl_shtr_.*")
+        // BLACKLIST: pl_ccs_*; REASON: deprecated upstream
+        .blacklist_function("pl_ccs_.*")
+        // BLACKLIST: pl_exp_[sg]et_time_seq; REASON: deprecated upstream
+        .blacklist_function("pl_exp_[sg]et_time_seq")
+        // BLACKLIST: pl_exp_check_progress; REASON: deprecated upstream
+        .blacklist_function("pl_exp_check_progress")
+        // BLACKLIST: pl_exp_set_cont_mode; REASON: deprecated upstream
+        .blacklist_function("pl_exp_set_cont_mode")
         // Tell cargo to invalidate the built crate whenever any of the
         // included header files changed.
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
