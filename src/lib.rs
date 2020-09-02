@@ -53,6 +53,8 @@ pub mod pvcam {
         }
     }
 
+    // TODO: is this actually necessary? Could it just be a std::result::Result enum?
+    // The benefit here is that we do not need to specify a enum value like we would with std::result
     enum PVResult {
         Ok,
         Err,
@@ -139,9 +141,11 @@ pub mod pvcam {
     }
 
     #[repr(u32)]
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Copy)]
     pub enum Parameter {
         CameraSerial = self::internal::PARAM_HEAD_SER_NUM_ALPHA,
+        ExposureMode = self::internal::PARAM_EXPOSURE_MODE,
+        ExposeOutMode = self::internal::PARAM_EXPOSE_OUT_MODE,
         GainIndex = self::internal::PARAM_GAIN_INDEX,
         ReadoutPort = self::internal::PARAM_READOUT_PORT,
         SensorParallelSize = self::internal::PARAM_PAR_SIZE,
@@ -149,13 +153,19 @@ pub mod pvcam {
         SpeedTableIndex = self::internal::PARAM_SPDTAB_INDEX,
     }
 
+    impl fmt::Display for Parameter {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{:?}=>{}", self, *self as u32)
+        }
+    }
+
     #[repr(i16)]
     pub enum ParamAttrKind {
         Current = self::internal::PL_PARAM_ATTRIBUTES_ATTR_CURRENT as i16,
-        // Count = self::internal::PL_PARAM_ATTRIBUTES_ATTR_COUNT as i16,
+        Count = self::internal::PL_PARAM_ATTRIBUTES_ATTR_COUNT as i16,
         AttrType = self::internal::PL_PARAM_ATTRIBUTES_ATTR_TYPE as i16,
-        // Min = self::internal::PL_PARAM_ATTRIBUTES_ATTR_MIN as i16,
-        // Max = self::internal::PL_PARAM_ATTRIBUTES_ATTR_MAX as i16,
+        Min = self::internal::PL_PARAM_ATTRIBUTES_ATTR_MIN as i16,
+        Max = self::internal::PL_PARAM_ATTRIBUTES_ATTR_MAX as i16,
         // Def = self::internal::PL_PARAM_ATTRIBUTES_ATTR_DEFAULT as i16,
         // Increment = self::internal::PL_PARAM_ATTRIBUTES_ATTR_INCREMENT as i16,
         // Access = self::internal::PL_PARAM_ATTRIBUTES_ATTR_ACCESS as i16,
@@ -183,14 +193,16 @@ pub mod pvcam {
     }
 
     enum ParamType {
+        Enum,
+        Int16,
         Int32,
         String,
     }
 
     fn get_param_type(cam_handle: i16, param_id: u32) -> Result<ParamType> {
         let kind: u32 = unsafe {
-            let mut t: c_types::c_ushort = 0;
-            let mut_ptr = &mut t as *mut c_types::c_ushort as *mut c_types::c_void;
+            let mut t: c_types::c_uint = 0;
+            let mut_ptr = &mut t as *mut c_types::c_uint as *mut c_types::c_void;
             match check_call(self::internal::pl_get_param(
                 cam_handle,
                 param_id,
@@ -205,8 +217,10 @@ pub mod pvcam {
         };
 
         match kind {
+            self::internal::TYPE_INT16 => Ok(ParamType::Int16),
             self::internal::TYPE_UNS16 => Ok(ParamType::Int32), // is this a leaky abstraction?
             self::internal::TYPE_CHAR_PTR => Ok(ParamType::String),
+            self::internal::TYPE_ENUM => Ok(ParamType::Enum),
             _ => Err(Error {
                 code: -1,
                 message: format!("{:#X} unknown parameter type", kind),
@@ -257,9 +271,84 @@ pub mod pvcam {
     }
 
     #[derive(Debug, Clone)]
+    pub struct PVEnum {
+        pub idx: u32,
+        pub value: i32,
+        pub name: String,
+    }
+
+    impl fmt::Display for PVEnum {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{}", self.name)
+        }
+    }
+
+    fn get_enum_str_len(cam_handle: i16, param_id: u32, enum_idx: u32) -> Result<u32> {
+        let mut value: u32 = 0;
+        match check_call(unsafe {
+            self::internal::pl_enum_str_length(cam_handle, param_id, enum_idx, &mut value)
+        }) {
+            PVResult::Ok => Ok(value),
+            PVResult::Err => Err(pvcam_error()),
+        }
+    }
+
+    fn get_enums(cam_handle: i16, param_id: u32) -> Result<Vec<PVEnum>> {
+        // build vector of all enum values
+        let mut enums: Vec<PVEnum> = vec![];
+
+        // get max enum value
+        let n_enums = get_param_as_int32(cam_handle, param_id, ParamAttrKind::Count)? as u32;
+        for i_enum in 0..n_enums {
+            // establish str len needed for enum val
+            let buf_len = get_enum_str_len(cam_handle, param_id, i_enum)?;
+            unsafe {
+                let buf = ffi::CString::from_vec_unchecked(vec![0; buf_len as usize]).into_raw();
+                let mut value: i32 = 0;
+                match check_call(self::internal::pl_get_enum_param(
+                    cam_handle, param_id, i_enum, &mut value, buf, buf_len,
+                )) {
+                    PVResult::Ok => {
+                        enums.push(PVEnum {
+                            idx: i_enum,
+                            value,
+                            name: ffi::CString::from_raw(buf).into_string()?,
+                        });
+                    }
+                    PVResult::Err => {
+                        return Err(pvcam_error());
+                    }
+                }
+            }
+        }
+
+        Ok(enums)
+    }
+
+    fn get_param_as_enum(
+        cam_handle: i16,
+        param_id: u32,
+        param_attr: ParamAttrKind,
+    ) -> Result<(u32, Vec<PVEnum>)> {
+        // get all possible values
+        let enums = get_enums(cam_handle, param_id)?;
+        // get the current value
+        let value = get_param_as_int32(cam_handle, param_id, param_attr)?;
+        // find the index of current value in all possible values
+        match enums.iter().position(|e| e.value == value) {
+            Some(idx) => Ok((idx as u32, enums)),
+            None => Err(Error {
+                code: -1,
+                message: format!("could not find {} in enum with values {:?} ", value, enums),
+            }),
+        }
+    }
+
+    #[derive(Debug, Clone)]
     pub enum ParameterValue {
-        IntValue(i32),
-        StringValue(String),
+        Enum(u32, Vec<PVEnum>),
+        Int(i32),
+        String(String),
     }
 
     pub fn get_param(
@@ -277,10 +366,17 @@ pub mod pvcam {
         }
 
         match get_param_type(cam_handle, param_id)? {
-            ParamType::Int32 => Ok(ParameterValue::IntValue(get_param_as_int32(
+            ParamType::Enum => {
+                let (idx, enums) = get_param_as_enum(cam_handle, param_id, param_attr)?;
+                Ok(ParameterValue::Enum(idx, enums))
+            }
+            ParamType::Int16 => Ok(ParameterValue::Int(get_param_as_int32(
                 cam_handle, param_id, param_attr,
             )?)),
-            ParamType::String => Ok(ParameterValue::StringValue(get_param_as_string(
+            ParamType::Int32 => Ok(ParameterValue::Int(get_param_as_int32(
+                cam_handle, param_id, param_attr,
+            )?)),
+            ParamType::String => Ok(ParameterValue::String(get_param_as_string(
                 cam_handle, param_id, param_attr,
             )?)),
         }
