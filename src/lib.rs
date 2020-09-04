@@ -8,6 +8,10 @@ pub mod pvcam {
 
         extern "C" {
             // blacklisted from bindgen because it incorrectly identifies camera_name as *mut std::os::raw::c_char
+            // this may not be the correct strategy here; it may be the case that
+            // *const c_char is just inherrently different than *mut c_char like *const c_void is wrt *mut c_void
+            // see: https://doc.rust-lang.org/std/ffi/enum.c_void.html
+            // and: https://doc.rust-lang.org/std/primitive.pointer.html
             pub fn pl_cam_open(
                 camera_name: *const std::os::raw::c_char,
                 hcam: *mut i16,
@@ -125,18 +129,26 @@ pub mod pvcam {
     }
 
     pub fn cam_open(cam_name: &str) -> Result<i16> {
-        let cam_name = ffi::CString::new(cam_name).expect("Unable to create ptr");
-        let mut handle: i16 = -1;
+        unsafe {
+            let cam_name = match ffi::CString::new(cam_name) {
+                Ok(ptr) => ptr,
+                Err(_) => {
+                    return Err(Error {
+                        code: -1,
+                        message: "Unable to create ptr".to_owned(),
+                    });
+                }
+            };
+            let mut handle: i16 = -1;
 
-        match check_call(unsafe {
-            self::internal::pl_cam_open(
+            match check_call(self::internal::pl_cam_open(
                 cam_name.as_ptr(),
                 &mut handle,
                 self::internal::PL_OPEN_MODES_OPEN_EXCLUSIVE as i16,
-            )
-        }) {
-            PVResult::Ok => Ok(handle),
-            PVResult::Err => Err(pvcam_error()),
+            )) {
+                PVResult::Ok => Ok(handle),
+                PVResult::Err => Err(pvcam_error()),
+            }
         }
     }
 
@@ -168,7 +180,7 @@ pub mod pvcam {
         Max = self::internal::PL_PARAM_ATTRIBUTES_ATTR_MAX as i16,
         // Def = self::internal::PL_PARAM_ATTRIBUTES_ATTR_DEFAULT as i16,
         // Increment = self::internal::PL_PARAM_ATTRIBUTES_ATTR_INCREMENT as i16,
-        // Access = self::internal::PL_PARAM_ATTRIBUTES_ATTR_ACCESS as i16,
+        Access = self::internal::PL_PARAM_ATTRIBUTES_ATTR_ACCESS as i16,
         Available = self::internal::PL_PARAM_ATTRIBUTES_ATTR_AVAIL as i16,
     }
 
@@ -250,14 +262,64 @@ pub mod pvcam {
         }
     }
 
-    fn get_param_as_int32(
-        cam_handle: i16,
-        param_id: u32,
-        param_attr: ParamAttrKind,
-    ) -> Result<i32> {
+    fn get_int_param_i16(cam_handle: i16, param_id: u32, param_attr: ParamAttrKind) -> Result<i16> {
+        unsafe {
+            let mut value: i16 = 0;
+            let mut_ptr = &mut value as *mut c_types::c_short as *mut c_types::c_void;
+            match check_call(self::internal::pl_get_param(
+                cam_handle,
+                param_id,
+                param_attr as i16,
+                mut_ptr,
+            )) {
+                PVResult::Ok => Ok(value),
+                PVResult::Err => Err(pvcam_error()),
+            }
+        }
+    }
+
+    fn set_int_param_i16(cam_handle: i16, param_id: u32, value: i16) -> Result<()> {
+        unsafe {
+            let mut value = value;
+            let mut_ptr = &mut value as *mut c_types::c_short as *mut c_types::c_void;
+            match check_call(self::internal::pl_set_param(cam_handle, param_id, mut_ptr)) {
+                PVResult::Ok => Ok(()),
+                PVResult::Err => Err(pvcam_error()),
+            }
+        }
+    }
+
+    fn get_int_param_i32(cam_handle: i16, param_id: u32, param_attr: ParamAttrKind) -> Result<i32> {
         unsafe {
             let mut value: i32 = 0;
             let mut_ptr = &mut value as *mut c_types::c_int as *mut c_types::c_void;
+            match check_call(self::internal::pl_get_param(
+                cam_handle,
+                param_id,
+                param_attr as i16,
+                mut_ptr,
+            )) {
+                PVResult::Ok => Ok(value),
+                PVResult::Err => Err(pvcam_error()),
+            }
+        }
+    }
+
+    fn set_int_param_i32(cam_handle: i16, param_id: u32, value: i32) -> Result<()> {
+        unsafe {
+            let mut value = value;
+            let mut_ptr = &mut value as *mut c_types::c_int as *mut c_types::c_void;
+            match check_call(self::internal::pl_set_param(cam_handle, param_id, mut_ptr)) {
+                PVResult::Ok => Ok(()),
+                PVResult::Err => Err(pvcam_error()),
+            }
+        }
+    }
+
+    fn get_int_param_u16(cam_handle: i16, param_id: u32, param_attr: ParamAttrKind) -> Result<u16> {
+        unsafe {
+            let mut value: u16 = 0;
+            let mut_ptr = &mut value as *mut c_types::c_ushort as *mut c_types::c_void;
             match check_call(self::internal::pl_get_param(
                 cam_handle,
                 param_id,
@@ -298,7 +360,7 @@ pub mod pvcam {
         let mut enums: Vec<PVEnum> = vec![];
 
         // get max enum value
-        let n_enums = get_param_as_int32(cam_handle, param_id, ParamAttrKind::Count)? as u32;
+        let n_enums = get_int_param_i32(cam_handle, param_id, ParamAttrKind::Count)? as u32;
         for i_enum in 0..n_enums {
             // establish str len needed for enum val
             let buf_len = get_enum_str_len(cam_handle, param_id, i_enum)?;
@@ -333,7 +395,7 @@ pub mod pvcam {
         // get all possible values
         let enums = get_enums(cam_handle, param_id)?;
         // get the current value
-        let value = get_param_as_int32(cam_handle, param_id, param_attr)?;
+        let value = get_int_param_i32(cam_handle, param_id, param_attr)?;
         // find the index of current value in all possible values
         match enums.iter().position(|e| e.value == value) {
             Some(idx) => Ok((idx as u32, enums)),
@@ -344,11 +406,99 @@ pub mod pvcam {
         }
     }
 
+    fn set_enum_param(cam_handle: i16, param_id: u32, value: u32) -> Result<()> {
+        unsafe {
+            let mut value = value;
+            let mut_ptr = &mut value as *mut c_types::c_uint as *mut c_types::c_void;
+            match check_call(self::internal::pl_set_param(cam_handle, param_id, mut_ptr)) {
+                PVResult::Ok => Ok(()),
+                PVResult::Err => Err(pvcam_error()),
+            }
+        }
+    }
+
     #[derive(Debug, Clone)]
     pub enum ParameterValue {
         Enum(u32, Vec<PVEnum>),
         Int(i32),
         String(String),
+    }
+
+    pub fn set_param(cam_handle: i16, parameter: Parameter, value: ParameterValue) -> Result<()> {
+        let param_id = parameter as u32;
+        // is_param_avail can succeed with a false value
+        if !is_param_avail(cam_handle, param_id)? {
+            return Err(Error {
+                code: -1,
+                message: format!("parameter {} is unknown", param_id),
+            });
+        }
+        // TODO: check if the parameter can be read or if it is write only or exist check only
+        // INFO: the PL_PARAM_ACCESS enum governs whether a parameter is r, w, rw or can only be checked for existence
+        use std::convert::TryFrom;
+        match value {
+            ParameterValue::Int(v) => match get_param_type(cam_handle, param_id)? {
+                ParamType::Int16 => match i16::try_from(v) {
+                    Ok(v) => set_int_param_i16(cam_handle, param_id, v as i16)?,
+                    Err(_) => {
+                        return Err(Error {
+                            code: -1,
+                            message: format!(
+                                "{} cannot fit in i16, which is what {} is",
+                                v, parameter
+                            ),
+                        })
+                    }
+                },
+                ParamType::Int32 => set_int_param_i32(cam_handle, param_id, v)?,
+                _ => {
+                    return Err(Error {
+                        code: -1,
+                        message: "unexpected number type".to_string(),
+                    });
+                }
+            },
+            ParameterValue::Enum(v, _) => match get_param_type(cam_handle, param_id)? {
+                ParamType::Enum => set_enum_param(cam_handle, param_id, v)?,
+                _ => {
+                    return Err(Error {
+                        code: -1,
+                        message: "unexpected enum type".to_string(),
+                    });
+                }
+            },
+            _ => {
+                return Err(Error {
+                    code: -1,
+                    message: format!("have not implemented this yet"),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    #[repr(u32)]
+    #[derive(Debug, Clone, Copy)]
+    pub enum ParameterAccess {
+        ReadOnly = self::internal::PL_PARAM_ACCESS_ACC_READ_ONLY,
+        ReadWrite = self::internal::PL_PARAM_ACCESS_ACC_READ_WRITE,
+        CheckOnly = self::internal::PL_PARAM_ACCESS_ACC_EXIST_CHECK_ONLY,
+        WriteOnly = self::internal::PL_PARAM_ACCESS_ACC_WRITE_ONLY,
+    }
+
+    pub fn get_param_access(cam_handle: i16, parameter: Parameter) -> Result<ParameterAccess> {
+        let access = get_int_param_u16(cam_handle, parameter as u32, ParamAttrKind::Access)?;
+        match access as u32 {
+            self::internal::PL_PARAM_ACCESS_ACC_READ_ONLY => Ok(ParameterAccess::ReadOnly),
+            self::internal::PL_PARAM_ACCESS_ACC_READ_WRITE => Ok(ParameterAccess::ReadWrite),
+            self::internal::PL_PARAM_ACCESS_ACC_EXIST_CHECK_ONLY => Ok(ParameterAccess::CheckOnly),
+            self::internal::PL_PARAM_ACCESS_ACC_WRITE_ONLY => Ok(ParameterAccess::WriteOnly),
+            _ => Err(Error {
+                code: -1,
+                message: "got {} from access check, not expected".to_owned(),
+            }),
+        }
     }
 
     pub fn get_param(
@@ -365,15 +515,17 @@ pub mod pvcam {
             });
         }
 
+        // TODO: check if the parameter can be read or if it is write only or exist check only
+        // INFO: the PL_PARAM_ACCESS enum governs whether a parameter is r, w, rw or can only be checked for existence
         match get_param_type(cam_handle, param_id)? {
             ParamType::Enum => {
                 let (idx, enums) = get_param_as_enum(cam_handle, param_id, param_attr)?;
                 Ok(ParameterValue::Enum(idx, enums))
             }
-            ParamType::Int16 => Ok(ParameterValue::Int(get_param_as_int32(
+            ParamType::Int16 => Ok(ParameterValue::Int(get_int_param_i16(
                 cam_handle, param_id, param_attr,
-            )?)),
-            ParamType::Int32 => Ok(ParameterValue::Int(get_param_as_int32(
+            )? as i32)),
+            ParamType::Int32 => Ok(ParameterValue::Int(get_int_param_i32(
                 cam_handle, param_id, param_attr,
             )?)),
             ParamType::String => Ok(ParameterValue::String(get_param_as_string(

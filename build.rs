@@ -43,6 +43,9 @@ fn main() {
         // generate bindings for these headers
         .header(format!("{}/master.h", header_include_path()))
         .header(format!("{}/pvcam.h", header_include_path()))
+        // TODO: work out how to populate this from
+        //  - https://www.photometrics.com/docs/pvcam-sdk/group__grp__pm__deprecated__functions.xhtml
+        //  - https://www.photometrics.com/docs/pvcam-sdk/group__grp__pm__deprecated__typedefs.xhtml
         // BLACKLIST: pl_cam_open; REASON: camera_name variable incorrectly marked as mutable
         .blacklist_function("pl_cam_open")
         // BLACKLIST: pl_dd_*; REASON: deprecated upstream
