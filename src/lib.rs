@@ -158,6 +158,7 @@ pub mod pvcam {
         CameraSerial = self::internal::PARAM_HEAD_SER_NUM_ALPHA,
         ExposureMode = self::internal::PARAM_EXPOSURE_MODE,
         ExposeOutMode = self::internal::PARAM_EXPOSE_OUT_MODE,
+        FirmwareVersion = self::internal::PARAM_CAM_FW_VERSION,
         GainIndex = self::internal::PARAM_GAIN_INDEX,
         ReadoutPort = self::internal::PARAM_READOUT_PORT,
         SensorParallelSize = self::internal::PARAM_PAR_SIZE,
@@ -531,6 +532,109 @@ pub mod pvcam {
             ParamType::String => Ok(ParameterValue::String(get_param_as_string(
                 cam_handle, param_id, param_attr,
             )?)),
+        }
+    }
+
+    // disable the dead_code check here because this is just a rusty export of rgn_type
+    #[allow(dead_code)]
+    pub struct Region {
+        s1: u16,
+        s2: u16,
+        sbin: u16,
+        p1: u16,
+        p2: u16,
+        pbin: u16,
+    }
+
+    use std::ops::Range;
+    impl Region {
+        pub fn new(x_config: (u16, Range<u16>), y_config: (u16, Range<u16>)) -> Self {
+            return Region {
+                s1: x_config.1.start,
+                s2: x_config.1.end,
+                sbin: x_config.0,
+                p1: y_config.1.start,
+                p2: y_config.1.end,
+                pbin: y_config.0,
+            };
+        }
+    }
+
+    pub fn exp_setup_seq(
+        cam_handle: i16,
+        exp_total: u16,
+        regions: Vec<Region>,
+        exp_mode: i16,
+        exposure_ms: u32,
+    ) -> Result<u32> {
+        unsafe {
+            let mut buf_size: u32 = 0;
+            let region_total = regions.len() as u16;
+            let regions = regions.as_ptr() as *const self::internal::rgn_type;
+
+            match check_call(self::internal::pl_exp_setup_seq(
+                cam_handle,
+                exp_total,
+                region_total,
+                regions,
+                exp_mode,
+                exposure_ms,
+                &mut buf_size,
+            )) {
+                PVResult::Ok => Ok(buf_size),
+                PVResult::Err => Err(pvcam_error()),
+            }
+        }
+    }
+
+    pub fn exp_start_seq(cam_handle: i16, buf_ptr: *mut u16) -> Result<()> {
+        unsafe {
+            match check_call(self::internal::pl_exp_start_seq(
+                cam_handle,
+                buf_ptr as *mut c_types::c_void,
+            )) {
+                PVResult::Ok => Ok(()),
+                PVResult::Err => Err(pvcam_error()),
+            }
+        }
+    }
+
+    #[repr(i16)]
+    #[derive(Debug, Clone, Copy)]
+    pub enum CaptureStatus {
+        ReadoutNotActive = self::internal::PL_IMAGE_STATUSES_READOUT_NOT_ACTIVE as i16,
+        ExposureInProgress = self::internal::PL_IMAGE_STATUSES_EXPOSURE_IN_PROGRESS as i16,
+        ReadoutInProgress = self::internal::PL_IMAGE_STATUSES_READOUT_IN_PROGRESS as i16,
+        ReadoutComplete = self::internal::PL_IMAGE_STATUSES_READOUT_COMPLETE as i16,
+        ReadoutFailed = self::internal::PL_IMAGE_STATUSES_READOUT_FAILED as i16,
+        Unknown = -1,
+    }
+
+    impl CaptureStatus {
+        pub fn from_i16(i: i16) -> Self {
+            match i as u32 {
+                self::internal::PL_IMAGE_STATUSES_READOUT_NOT_ACTIVE => Self::ReadoutNotActive,
+                self::internal::PL_IMAGE_STATUSES_EXPOSURE_IN_PROGRESS => Self::ExposureInProgress,
+                self::internal::PL_IMAGE_STATUSES_READOUT_IN_PROGRESS => Self::ReadoutInProgress,
+                self::internal::PL_IMAGE_STATUSES_READOUT_COMPLETE => Self::ReadoutComplete,
+                self::internal::PL_IMAGE_STATUSES_READOUT_FAILED => Self::ReadoutFailed,
+                _ => Self::Unknown,
+            }
+        }
+    }
+
+    pub fn exp_check_status(cam_handle: i16) -> Result<(CaptureStatus, u32)> {
+        unsafe {
+            let mut status: i16 = -1;
+            let mut bytes_read: u32 = 0;
+            match check_call(self::internal::pl_exp_check_status(
+                cam_handle,
+                &mut status,
+                &mut bytes_read,
+            )) {
+                PVResult::Ok => Ok((CaptureStatus::from_i16(status), bytes_read)),
+                PVResult::Err => Err(pvcam_error()),
+            }
         }
     }
 }
