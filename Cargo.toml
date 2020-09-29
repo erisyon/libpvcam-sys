@@ -1,8 +1,12 @@
 [package]
-name = "libpvcam-sys"
 version = "0.1.0"
-authors = ["ossareh"]
+name = "libpvcam-sys"
+description = "bindgen generated FFI bindings for Photometrics' C SDK"
+repository = "https://github.com/erisyon/libpvcam-sys"
+authors = ["ossareh", "danwinkler"]
 edition = "2018"
+license-file = "LICENSE"
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
