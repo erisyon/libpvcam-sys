@@ -26,7 +26,6 @@ pub mod pvcam {
 
     pub type Result<T> = std::result::Result<T, Error>;
 
-    // TODO: work out how to make this
     #[derive(Debug, Clone)]
     pub struct Error {
         pub code: i16,
